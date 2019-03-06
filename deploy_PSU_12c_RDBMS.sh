@@ -11,14 +11,17 @@ PATCH_DIR=$BASE_DIR/patches
 LOG_DIR=$BASE_DIR/log
 
 # set defaults
-COMP_TYPE=RDBMS
-ORA_VER=12.1.0.2
-PSU_VER=180717
+COMP_TYPE=RDBMS          # component - only RDBMS accepted
+ORA_VER=12.1.0.2         # version   - either 12.1.0.2 or 12.2.0.1 accepted
+PSU_VER=180717           # PSU       - either 180717 or 181016 accepted
+DEBUG=FALSE              # debug     - the default is for no additional debug output
+DRY_RUN=FALSE            # dryRun    - the default is not to perform a dry run
+TEST_RUN=FALSE           # testRun   - the default is not to perform a test run
+NO_PROMPT=FALSE          # noPrompt  - the default is to prompt the user if run interactively
+NO_RETRY=FALSE           # noRetry   - the default is to execute the apply script a second time if the first is unsuccessful
+NO_CLEANUP=FALSE         # noCleanup - the default is to remove any files SCP'ed to hosts
 
-DRY_RUN=FALSE
-TEST_RUN=FALSE
 DEBUG=FALSE
-NO_PROMPT=FALSE
 MAX_ATTEMPTS_PER_HOST=2
 SSH_USER_DEF=oracle
 
@@ -85,19 +88,21 @@ function usage()
 {
   echo
   echo "Usage:"
-  echo "$THIS_SCRIPT [-hostList=HOST_LIST_FILE] [-component=COMP_TYPE] [-version=ORA_VER] [-PSU=PSU_VER] {-doDatapatch} {-noGrid} {-pdb} {-noPrompt} {-debug} {-dryRun} {-testRun} {-help} "
+  echo "$THIS_SCRIPT -hostList=\$HOST_LIST_FILE -component=\$COMP_TYPE -version=\$ORA_VER -PSU=\$PSU_VER {-PDB -doDatapatch -noGrid -noPrompt -noCleanup -noRetry -dryRun -testRun -debug -help} "
   echo
   echo "Where:"
   echo "  -hostList|-hl    - Required. Full path to a file listing all hosts to apply patches to and Oracle SIDs (format per line is 'hostname:SID:SSH_USER'"
   echo "  -component|-c    - Required. Specify the Oracle component to stop and apply patches to (only RDBMS is valid)"
-  echo "  -version|-v      - Required. Specify the Oracle 12c database version (12.1.0.2 or 12.2.0.1)"
-  echo "  -PSU|-psu        - Required. Specify the Oracle PSU date to apply to the Oracle Home (format must be YYMMDD and currently 180717 and 181016 are valid)"
-  echo "  -doDatapatch|-dp - Optional. Setting this option this will run OPatch/datapatch after attaching the new Oracle Home (the default is not to run datapatch)"
-  echo "  -noGrid|-ng      - Optional. Setting this option this will NOT use any Grid Infrastructure commands (ignored if RAC is detected and the default is to test if GI is present)"
-  echo "  -PDB|-pdb        - Optional. Setting this option adds the step to open all pluggable databases (not set by default)"
-  echo "  -noPrompt|-np    - Optional. Set this option to run with no prompts to the user (not set by default)"
-  echo "  -dryRun|-dr      - Optional. Set this option to not apply any patches but may attempt to restart services (not set by default)"
-  echo "  -testRun|-tr     - Optional. Set this option to only display the apply scripts usage message on each remote host (not set by default)"
+  echo "  -version|-v      - Required. Specify the Oracle 12c database version (12.1.0.2 or 12.2.0.1 valid)"
+  echo "  -PSU|-psu        - Required. Specify the Oracle PSU date to apply (format YYMMDD, 180717 or 181016 valid)"
+  echo "  -PDB|-pdb        - Optional. Open all pluggable databases (not set by default)"
+  echo "  -doDatapatch|-dp - Optional. Run OPatch/datapatch after attaching the new Oracle Home (not set by default)"
+  echo "  -noGrid|-ng      - Optional. Do not use any Grid Infrastructure commands (ignored if RAC is detected)"
+  echo "  -noPrompt|-np    - Optional. Do not prompt the user (not set by default)"
+  echo "  -noCleanup|-nc   - Optional. Do not apply removed any files SCP'ed to each host (not set by default)"
+  echo "  -noRetry|-nr     - Optional. Do not retry the apply script if the first attempt fails (not set by default)"
+  echo "  -dryRun|-dr      - Optional. Do not apply any patches but attempt to restart services (not set by default)"
+  echo "  -testRun|-tr     - Optional. Only display the apply scripts usage message on each remote host (not set by default)"
   echo "  -debug|-d        - Optional. Display additional debug output to screen (not set by default)"
   echo "  -help|-h         - Optional. Display this usage message and exit"
   echo 
@@ -159,6 +164,12 @@ do
                 ;;
         -noPrompt|-np)
                 NO_PROMPT=TRUE
+                ;;
+        -noCleanup|-nc)
+                NO_CLEANUP=TRUE
+                ;;
+        -noRetry|-nr)
+                NO_RETRY=TRUE
                 ;;
         -dryRun|-dr)
                 DRY_RUN=TRUE
@@ -261,6 +272,24 @@ if [[ ! -d $NFS_APPLY_PSU_DIR ]]; then
   exit 1
 fi
 
+if [[ "$NO_PROMPT" == "TRUE" ]]; then
+  echo -e "\nINFO: The noPrompt option has been is enabled"
+fi
+if [[ "$NO_CLEANUP" == "TRUE" ]]; then
+  echo -e "\nINFO: The noCleanup option is enabled (all files SCP'ed to hosts will not be removed)"
+fi
+if [[ "$NO_RETRY" == "TRUE" ]]; then
+  echo -e "\nINFO: The noRetry option is enabled (the apply script will only be attempted once on all hosts)"
+  MAX_ATTEMPTS_PER_HOST=1
+fi
+if [[ "$DRY_RUN" == "TRUE" ]]; then
+  echo -e "\nINFO: The dryRun option is enabled (no patches will be applied but services will be restarted on all hosts)"
+fi
+if [[ "$TEST_RUN" == "TRUE" ]]; then
+  echo -e "\nINFO: The testRun option is enabled (a usage message will be displayed on each host successfully connected to and nothing run)"
+fi
+
+# unzip patches on the NFS share with the update flag in case done already
 CMD="unzip -q -o -u -d $NFS_APPLY_PSU_DIR $NFS_APPLY_PSU_DIR/p\*.zip"
 echo -e "\nCMD: $CMD $CMD_REDIR"
 eval "$CMD $CMD_REDIR"
@@ -275,17 +304,6 @@ do
   ZIP_FILE_LIST="$ZIP_FILE_LIST "$(basename $ZIP_FILE)
 done
 echo -e "\nINFO: List of patch zip files is: "$ZIP_FILE_LIST
-
-if [[ "$NO_PROMPT" == "TRUE" ]]; then
-  echo -e "\nINFO: The noPrompt option is enabled"
-fi
-
-if [[ "$DRY_RUN" == "TRUE" ]]; then
-  echo -e "\nINFO: The dryRun option is enabled (no patches will be applied but services will be restarted on all hosts)"
-fi
-if [[ "$TEST_RUN" == "TRUE" ]]; then
-  echo -e "\nINFO: The testRun option is enabled (a usage message will be displayed on each host successfully connected to and nothing run)"
-fi
 
 
 ## 
@@ -517,19 +535,21 @@ while [[ $RESULT == FAILED ]] && [[ $COUNT -lt $MAX_ATTEMPTS_PER_HOST ]]; do
   fi
 
   # cleanup
-  if [[ $HOST_NFS_CHECK -gt 0 ]]; then
-    CMD="rm -f $(basename $APPLY_PSU_SCRIPT)"
-  else
-    CMD="rm -rf $(basename $APPLY_PSU_SCRIPT) $FULL_APPLY_PSU_DIR"
+  if [[ $NO_CLEANUP == "FALSE" ]]; then
+    if [[ $HOST_NFS_CHECK -gt 0 ]]; then
+      CMD="rm -f $(basename $APPLY_PSU_SCRIPT)"
+    else
+      CMD="rm -rf $(basename $APPLY_PSU_SCRIPT) $FULL_APPLY_PSU_DIR"
+    fi
+    echo -e "\n$HOST - CMD: $CMD $CMD_REDIR"
+    eval "$SSH_CMD $CMD $CMD_REDIR"
+    if [[ ! $? -eq 0 ]]; then
+      echo -e "\n$HOST - WARN: cleanup on $HOST as $SSH_USER failed"
+    else
+      echo -e "\n$HOST - PASS: cleanup on $HOST as $SSH_USER done"
+    fi
   fi
-  echo -e "\n$HOST - CMD: $CMD $CMD_REDIR"
-  eval "$SSH_CMD $CMD $CMD_REDIR"
-  if [[ ! $? -eq 0 ]]; then
-    echo -e "\n$HOST - WARN: cleanup on $HOST as $SSH_USER failed"
-  else
-    echo -e "\n$HOST - PASS: cleanup on $HOST as $SSH_USER done"
-  fi
-  
+
   echo -e "\n$HOST - INFO: $(date)"
   echo -e "\n$HOST - INFO: $RESULT"
 

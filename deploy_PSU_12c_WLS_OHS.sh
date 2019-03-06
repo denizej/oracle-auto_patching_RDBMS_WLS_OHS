@@ -8,9 +8,10 @@ DEBUG=FALSE              # debug     - the default is for no additional debug ou
 DRY_RUN=FALSE            # dryRun    - the default is not to perform a dry run 
 TEST_RUN=FALSE           # testRun   - the default is not to perform a test run
 NO_PROMPT=FALSE          # noPrompt  - the default is to prompt the user if run interactively
-NM_UNAME="weblogic"      # NMUname   - the default NM and Admin Server username
-NM_PWORD="weblog1c"      # NMPword   - this is the default for most dev/test Node Managers and Admin Servers
-#NM_PWORD="Log1cweb!"    # NMPword   - alternative default
+NO_RETRY=FALSE           # noRetry   - the default is to execute the apply script a second time if the first is unsuccessful
+NO_CLEANUP=FALSE         # noCleanup - the default is to remove any files SCP'ed to hosts
+NM_UNAME_DEF="weblogic"  # NMUname   - the default NM and Admin Server username
+NM_PWORD_DEF="weblog1c"  # NMPword   - this is the default for most dev/test Node Managers and Admin Servers
 
 # the file name of the Apply script that is copied to the host then executed remotely
 APPLY_PSU_SCRIPT=apply_PSU_12c_WLS_OHS.sh
@@ -83,16 +84,18 @@ function usage()
 {
   echo
   echo "Usage:"
-  echo "$THIS_SCRIPT [-hostList=HOST_LIST_FILE] [-component=COMP_TYPE] [-version=ORA_VER] [-PSU=PSU_VER] {-NMUname=NM_UNAME} {-NMPword=NM_PWORD} {-noPrompt} {-debug} {-dryRun} {-testRun} {-help} "
+  echo "$THIS_SCRIPT -hostList=\$HOST_LIST_FILE -component=\$COMP_TYPE -version=\$ORA_VER -PSU=\$PSU_VER {-NMUname=NM_UNAME -NMPword=NM_PWORD -noPrompt -noCleanup -noRetry -dryRun -testRun -debug -help} "
   echo
   echo "Where:"
   echo "  -hostList|-hl    - Required. Full path to a file listing all hosts to apply patches to"
   echo "  -component|-c    - Required. Specify the Oracle component to stop and apply patches to (either WLS or OHS)"
   echo "  -version|-v      - Required. Specify the Oracle 12c WLS/OHS version (currently only 12.1.3.0 is valid)"
-  echo "  -PSU|-psu        - Required. Specify the Oracle PSU date to apply to the Oracle Home (format must be YYMMDD and currently only 180717 is valid)"
+  echo "  -PSU|-psu        - Required. Specify the Oracle PSU date to apply (format YYMMDD and only 180717 is valid)"
   echo "  -NMUname|-u      - Optional. Node Manager / Admin Server username (usually the same for both)"
   echo "  -NMPword|-p      - Optional. Node Manager / Admin Server password (usually the same for both)"
   echo "  -noPrompt|-np    - Optional. Do not prompt the user (not set by default)"
+  echo "  -noCleanup|-nc   - Optional. Do not apply removed any files SCP'ed to each host (not set by default)" 
+  echo "  -noRetry|-nr     - Optional. Do not retry the apply script if the first attempt fails (not set by default)" 
   echo "  -dryRun|-dr      - Optional. Do not apply any patches but attempt to restart services (not set by default)"
   echo "  -testRun|-tr     - Optional. Only display the apply scripts usage message on each host (not set by default)" 
   echo "  -debug|-d        - Optional. Display additional debug output to screen  (not set by default)"
@@ -154,13 +157,19 @@ do
                 DEBUG=TRUE
                 ;;
         -noPrompt|-np)
-                NO_PROMPT=TRUE
+                NO_PROMPT_OPT=TRUE
                 ;;
         -dryRun|-dr)
                 DRY_RUN=TRUE
                 ;;
         -testRun|-tr)
                 TEST_RUN=TRUE
+                ;;
+        -noCleanup|-nc)
+                NO_CLEANUP=TRUE
+                ;;
+        -noRetry|-nr)
+                NO_RETRY=TRUE
                 ;;
         -hostList|-hl)
                 HOST_LIST_FILE="$value"
@@ -213,11 +222,13 @@ if [[ -z $COMP_TYPE ]]; then
   usage $0
   exit 1
 elif [[ $COMP_TYPE == OHS ]]; then
-  echo -e "\nINFO: component type $COMP_TYPE is supported"
   SSH_USER=oraweb
+  echo -e "\nINFO: Component type $COMP_TYPE is supported"
+  echo -e "\nINFO: SSH user is $SSH_USER"
 elif [[ $COMP_TYPE == WLS ]]; then
-  echo -e "\nINFO: component type $COMP_TYPE is supported"
   SSH_USER=oracleas
+  echo -e "\nINFO: Component type $COMP_TYPE is supported"
+  echo -e "\nINFO: SSH user is $SSH_USER"
 else
   echo -e "\nFATAL: COMP_TYPE $COMP_TYPE unsupported"
   exit 1
@@ -258,6 +269,38 @@ if [[ ! -d $NFS_APPLY_PSU_DIR ]]; then
   exit 1
 fi
 
+# check if the default NM/WLS username and password are to be tried
+if [[ -z $NM_UNAME ]]; then
+  NM_UNAME=$NM_UNAME_DEF
+  echo -e "\nWARNING: No username given for the Node Manager or WebLogic Admin Server so a default will be tried\n"
+  prompt_if_interactive
+fi
+
+if [[ -z $NM_PWORD ]]; then
+  NM_PWORD=$NM_PWORD_DEF
+  echo -e "\nWARNING: No password given for the Node Manager or WebLogic Admin Server so a default will be tried\n"
+  prompt_if_interactive
+fi
+
+if [[ "$NO_PROMPT_OPT" == "TRUE" ]]; then
+  NO_PROMPT=$NO_PROMPT_OPT
+  echo -e "\nINFO: The noPrompt option is now enabled"
+fi
+if [[ "$DRY_RUN" == "TRUE" ]]; then
+  echo -e "\nINFO: The dryRun option is enabled (no patches will be applied but services will be restarted on all hosts)"
+fi
+if [[ "$TEST_RUN" == "TRUE" ]]; then
+  echo -e "\nINFO: The testRun option is enabled (a usage message will be displayed on each host successfully connected to and nothing run)"
+fi
+if [[ "$NO_CLEANUP" == "TRUE" ]]; then
+  echo -e "\nINFO: The noCleanup option is enabled (all files SCP'ed to hosts will not be removed)"
+fi
+if [[ "$NO_RETRY" == "TRUE" ]]; then
+  echo -e "\nINFO: The noRetry option is enabled (the apply script will only be attempted once on all hosts)"
+  MAX_ATTEMPTS_PER_HOST=1
+fi
+
+# unzip patches on the NFS share with the update flag in case done already
 CMD="unzip -q -o -u -d $NFS_APPLY_PSU_DIR $NFS_APPLY_PSU_DIR/p\*.zip"
 echo -e "\nCMD: $CMD $CMD_REDIR"
 eval "$CMD $CMD_REDIR"
@@ -272,16 +315,6 @@ do
 done
 echo -e "\nINFO: List of patch zip files is: "$ZIP_FILE_LIST
 
-if [[ "$NO_PROMPT" == "TRUE" ]]; then
-  echo -e "\nINFO: The noPrompt option is enabled"
-fi
-
-if [[ "$DRY_RUN" == "TRUE" ]]; then
-  echo -e "\nINFO: The dryRun option is enabled (no patches will be applied but services will be restarted on all hosts)"
-fi
-if [[ "$TEST_RUN" == "TRUE" ]]; then
-  echo -e "\nINFO: The testRun option is enabled (a usage message will be displayed on each host successfully connected to and nothing run)"
-fi
 
 
 ## 
@@ -475,17 +508,19 @@ while [[ $RESULT == FAILED ]] && [[ $COUNT -lt $MAX_ATTEMPTS_PER_HOST ]]; do
 
 
   # cleanup
-  if [[ $HOST_NFS_CHECK -gt 0 ]]; then
-    CMD="rm -f $(basename $APPLY_PSU_SCRIPT)"
-  else
-    CMD="rm -rf $(basename $APPLY_PSU_SCRIPT) $FULL_APPLY_PSU_DIR"
-  fi
-  echo -e "\n$HOST - CMD: $CMD $CMD_REDIR"
-  #eval "$SSH_CMD $CMD $CMD_REDIR"
-  if [[ ! $? -eq 0 ]]; then
-    echo -e "\n$HOST - WARN: cleanup on $HOST as $SSH_USER failed"
-  else
-    echo -e "\n$HOST - PASS: cleanup on $HOST as $SSH_USER done"
+  if [[ $NO_CLEANUP == "FALSE" ]]; then
+    if [[ $HOST_NFS_CHECK -gt 0 ]]; then
+      CMD="rm -f $(basename $APPLY_PSU_SCRIPT)"
+    else
+      CMD="rm -rf $(basename $APPLY_PSU_SCRIPT) $FULL_APPLY_PSU_DIR"
+    fi
+    echo -e "\n$HOST - CMD: $CMD $CMD_REDIR"
+    eval "$SSH_CMD $CMD $CMD_REDIR"
+    if [[ ! $? -eq 0 ]]; then
+      echo -e "\n$HOST - WARN: cleanup on $HOST as $SSH_USER failed"
+    else
+      echo -e "\n$HOST - PASS: cleanup on $HOST as $SSH_USER done"
+    fi
   fi
   
   echo -e "\n$HOST - INFO: $(date)"

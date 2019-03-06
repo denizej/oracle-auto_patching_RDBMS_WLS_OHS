@@ -17,7 +17,7 @@ NM_PWORD="weblog1c"      # NMPword   - this is the default for most dev/test Nod
 
 # default Admin Server and Node Manager usernames and passwords (normally there is no difference between the 2)
 AS_UNAME=""              # ASUname   - by default this is the same as NM_UNAME but if not then it can be manually set here
-AS_PWORD="Log1cweb"      # ASPword   - by default this is the same as NM_PWORD but if not then it can be manually set here
+AS_PWORD=""              # ASPword   - by default this is the same as NM_PWORD but if not then it can be manually set here
 NM_PWORD_DEV="weblog1c"  # NMPword   - this is used for any 2nd attempts to connect to the Node Manager (useful if the Admin Server password is 
 
 # other defaults
@@ -88,12 +88,12 @@ function usage()
 {
   echo
   echo "Usage:"
-  echo "$THIS_SCRIPT [-component=COMP_TYPE] [-version=ORA_VER] [-PSU=PSU_VER] {-NMUname=NM_UNAME} {-NMPword=NM_PWORD} {-stageDir=BASE_DIR} {-noPrompt} {-debug} {-dryRun} {-help} "
+  echo "$THIS_SCRIPT -component=\$COMP_TYPE -version=\$ORA_VER -PSU=\$PSU_VER {-NMUname=NM_UNAME -NMPword=NM_PWORD -stageDir=STAGE_DIR -noPrompt -dryRun -debug -help} "
   echo
   echo "Where:"
   echo "  -component|-c    - Required. Specify the Oracle component to stop and apply patches to (either WLS or OHS)"
   echo "  -version|-v      - Required. Specify the Oracle 12c WLS/OHS version (currently only 12.1.3.0 is valid)"
-  echo "  -PSU|-psu        - Required. Specify the Oracle PSU date to apply to the Oracle Home (format must be YYMMDD and currently only 180717 is valid)"
+  echo "  -PSU|-psu        - Required. Specify the Oracle PSU date to apply (format YYMMDD and only 180717 is valid)"
   echo "  -NMUname|-u      - Optional. Node Manager / Admin Server username (usually the same for both)"
   echo "  -NMPword|-p      - Optional. Node Manager / Admin Server password (usually the same for both)"
   echo "  -stageDir|-s     - Optional. Staging directory with all unzipped patches (default is under $BASE_DIR/psu)"
@@ -1187,6 +1187,7 @@ do
   fi
 done
 
+# stop the Node Manager
 echo -e "\nINFO: Stopping the Node Manager..."
 prompt_if_interactive
 CMD="${DOMAIN_HOME}/bin/stopNodeManager.sh"
@@ -1194,9 +1195,25 @@ echo -e "\nCMD: $CMD"
 eval "$CMD $CMD_REDIR"
 # pause 1 second
 sleep 1
-
 if [[ $(ps -fu $WHOAMI|grep -v grep|grep -c weblogic.NodeManager) -ne 0 ]]; then
-  echo -e "\nERROR: The Node Manager is still running"
+  echo -e "\nWARNING: The Node Manager is still running after first stop attempt, will try once more"
+  echo -e "\nCMD: $CMD"
+  eval "$CMD $CMD_REDIR"
+  sleep 1
+fi
+if [[ $(ps -fu $WHOAMI|grep -v grep|grep -c weblogic.NodeManager) -ne 0 ]]; then
+  echo -e "\nWARNING: The Node Manager is still running after 2 attempts to stop it, will resort to a kill"
+  NM_PID=$(ps -fu $WHOAMI|grep -v grep|grep weblogic.NodeManager|awk {'print$2'})
+  CMD="kill $NM_PID $CMD_REDIR"
+  echo -e "\nCMD: $CMD"
+  eval "$CMD $CMD_REDIR"
+  sleep 1
+  CMD="kill -9 $NM_PID $CMD_REDIR"
+  echo -e "\nCMD: $CMD"
+  eval "$CMD $CMD_REDIR"
+fi
+if [[ $(ps -fu $WHOAMI|grep -v grep|grep -c weblogic.NodeManager) -ne 0 ]]; then
+  echo -e "\nFATAL: The Node Manager is still running after mulitple attempts to stop and kill it"
   exit 1
 else
   echo -e "\nINFO: Node Manager stopped"
